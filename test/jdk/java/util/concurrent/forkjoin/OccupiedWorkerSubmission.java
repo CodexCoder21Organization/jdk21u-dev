@@ -80,6 +80,7 @@ public class OccupiedWorkerSubmission {
         PrintWriter commands = new PrintWriter(child.getOutputStream(), true);
         EventSet worker = null, producer = null;
         int stage = 0;
+        Throwable failure = null;
         try {
             var prepare = vm.eventRequestManager().createClassPrepareRequest();
             prepare.addClassFilter("java.util.concurrent.ForkJoinPool");
@@ -88,9 +89,19 @@ public class OccupiedWorkerSubmission {
             vm.resume();
             boolean finished = false;
             while (!finished) {
-                EventSet events = vm.eventQueue().remove(10_000);
-                if (events == null)
+                // Once ordering is complete, the child's ten-second completion
+                // assertion owns the verdict. A second simultaneous ten-second
+                // debugger timer would race its failure report and hide it.
+                EventSet events = stage == 3 ? vm.eventQueue().remove()
+                        : vm.eventQueue().remove(10_000);
+                if (events == null) {
+                    vm.suspend();
+                    for (var thread : vm.allThreads()) {
+                        System.err.println("DEBUG " + thread.name());
+                        for (var frame : thread.frames()) System.err.println("  " + frame.location());
+                    }
                     throw new AssertionError("Child did not reach ordering stage " + stage);
+                }
                 boolean hold = false;
                 for (Event event : events) {
                     if (event instanceof ClassPrepareEvent e) {
@@ -132,18 +143,26 @@ public class OccupiedWorkerSubmission {
             }
         } catch (VMDisconnectedException disconnected) {
             // Process status below is authoritative once the child disconnects.
+        } catch (Exception | Error problem) {
+            failure = problem;
+            throw problem;
         } finally {
+            // Closing the command pipe lets a child waiting for SUBMIT exit
+            // when setup fails, before waiting for process termination.
+            commands.close();
             try { vm.dispose(); } catch (VMDisconnectedException disconnected) {
                 // A normally exited child has already disconnected.
             }
             if (!child.waitFor(10, TimeUnit.SECONDS)) {
                 child.destroyForcibly();
                 child.waitFor();
-                throw new AssertionError("Child did not exit after debugger detached at stage " + stage);
+                AssertionError cleanup = new AssertionError(
+                        "Child did not exit after debugger detached at stage " + stage);
+                if (failure != null) failure.addSuppressed(cleanup);
+                else throw cleanup;
             }
             stdout.join();
             stderr.join();
-            commands.close();
         }
         if (stage != 3 || child.exitValue() != 0)
             throw new AssertionError("Submission failed: mode=" + mode
