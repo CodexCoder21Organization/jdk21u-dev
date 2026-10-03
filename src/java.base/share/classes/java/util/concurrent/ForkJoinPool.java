@@ -571,16 +571,16 @@ public class ForkJoinPool extends AbstractExecutorService {
      * guarantee that a pool can become dormant (quiesced or
      * terminated), because external racing producers do not vote, and
      * can asynchronously submit new tasks. To deal with this, the
-     * final unparked thread (in awaitWork) scans external queues to
+     * each deactivating thread (in awaitWork) scans all queues to
      * check for tasks that could have been added during a race window
      * that would not be accompanied by a signal, in which case
      * re-activating itself (or any other worker) to recheck. The same
      * sets of checks are used in tryTerminate, to correctly trigger
      * delayed termination (shutDown, followed by quiescence) in the
-     * presence of racing submissions. In all cases, the notion of the
-     * "final" unparked thread is an approximation, because new
-     * workers could be in the process of being constructed, which
-     * occasionally adds some extra unnecessary processing.
+     * presence of racing submissions. A released worker can be
+     * occupied rather than scanning, so a positive released count
+     * does not remove the need to check for missed submissions,
+     * including those published to another worker's local queue.
      *
      * Shutdown and Termination. A call to shutdownNow invokes
      * tryTerminate to atomically set a mode bit. The calling thread,
@@ -1868,9 +1868,9 @@ public class ForkJoinPool extends AbstractExecutorService {
             w.stackPred = (int)pc;               // set ctl stack link
         } while (pc != (pc = compareAndExchangeCtl(
                             pc, qc = ((pc - RC_UNIT) & UC_MASK) | sp)));
+        if (hasTasks(false) && (w.phase >= 0 || reactivate() == w))
+            return 0;                            // check for missed signals
         if ((qc & RC_MASK) <= 0L) {
-            if (hasTasks(true) && (w.phase >= 0 || reactivate() == w))
-                return 0;                        // check for stragglers
             if (runState != 0 && tryTerminate(false, false))
                 return -1;                       // quiescent termination
             idle = true;
