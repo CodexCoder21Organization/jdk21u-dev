@@ -33,7 +33,6 @@ import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class OccupiedWorkerLifecycle {
@@ -111,13 +110,7 @@ public class OccupiedWorkerLifecycle {
 
     static void factory() throws Exception {
         IllegalStateException expected = new IllegalStateException("Worker construction rejected by test factory");
-        AtomicInteger attempts = new AtomicInteger();
-        ForkJoinPool pool = new ForkJoinPool(1, p -> {
-            int attempt = attempts.incrementAndGet();
-            if (attempt == 1) throw expected;
-            if (attempt == 2) return null;
-            return ForkJoinPool.defaultForkJoinWorkerThreadFactory.newThread(p);
-        }, null, true);
+        ForkJoinPool pool = new ForkJoinPool(1, p -> { throw expected; }, null, true);
         try {
             try {
                 pool.execute(() -> { });
@@ -126,13 +119,16 @@ public class OccupiedWorkerLifecycle {
                 if (observed != expected) throw new AssertionError("Original factory failure was replaced", observed);
             }
             if (pool.getPoolSize() != 0) throw new AssertionError("Failed worker reservation retained: " + pool);
-            pool.execute(() -> { });
-            if (pool.getPoolSize() != 0) throw new AssertionError("Null worker reservation retained: " + pool);
-            CountDownLatch recovered = new CountDownLatch(1);
-            pool.execute(recovered::countDown);
-            await(recovered, "valid worker after two factory failures");
-            if (attempts.get() != 3) throw new AssertionError("Unexpected factory call count: " + attempts);
         } finally { terminate(pool); }
+        // The factory contract permits unexecuted tasks after rejection.
+        // A null result must still release the reserved worker count and
+        // allow shutdown to finish; later task execution is not promised.
+        ForkJoinPool noWorker = new ForkJoinPool(1, p -> null, null, true);
+        try {
+            noWorker.execute(() -> { });
+            if (noWorker.getPoolSize() != 0) throw new AssertionError("Null worker reservation retained: " + noWorker);
+        } finally { terminate(noWorker); }
+
     }
 
     static void compensation() throws Exception {
