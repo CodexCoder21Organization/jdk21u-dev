@@ -75,8 +75,9 @@ public class OccupiedWorkerSubmission {
         arguments.get("home").setValue(System.getProperty("test.jdk", System.getProperty("java.home")));
         VirtualMachine vm = connector.launch(arguments);
         Process child = vm.process();
-        Thread stdout = Thread.ofPlatform().daemon().start(() -> copy(child.getInputStream(), System.out));
-        Thread stderr = Thread.ofPlatform().daemon().start(() -> copy(child.getErrorStream(), System.err));
+        AtomicReference<Throwable> outputFailure = new AtomicReference<>();
+        Thread stdout = Thread.ofPlatform().daemon().start(() -> copy(child.getInputStream(), System.out, outputFailure));
+        Thread stderr = Thread.ofPlatform().daemon().start(() -> copy(child.getErrorStream(), System.err, outputFailure));
         PrintWriter commands = new PrintWriter(child.getOutputStream(), true);
         EventSet worker = null, producer = null;
         int stage = 0;
@@ -164,6 +165,8 @@ public class OccupiedWorkerSubmission {
             stdout.join();
             stderr.join();
         }
+        if (outputFailure.get() != null)
+            throw new AssertionError("Could not read child output", outputFailure.get());
         if (stage != 3 || child.exitValue() != 0)
             throw new AssertionError("Submission failed: mode=" + mode
                     + ", stage=" + stage + ", exit=" + child.exitValue());
@@ -185,9 +188,10 @@ public class OccupiedWorkerSubmission {
         request.enable();
     }
 
-    static void copy(java.io.InputStream in, java.io.OutputStream out) {
-        try { in.transferTo(out); } catch (java.io.IOException failure) {
-            throw new AssertionError("Could not read child output", failure);
+    static void copy(java.io.InputStream in, java.io.OutputStream out,
+                     AtomicReference<Throwable> failure) {
+        try (in) { in.transferTo(out); } catch (java.io.IOException problem) {
+            failure.compareAndSet(null, problem);
         }
     }
 

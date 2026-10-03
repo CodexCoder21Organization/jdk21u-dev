@@ -570,7 +570,7 @@ public class ForkJoinPool extends AbstractExecutorService {
      * deactivation. However, this voting mechanism alone does not
      * guarantee that a pool can become dormant (quiesced or
      * terminated), because external racing producers do not vote, and
-     * can asynchronously submit new tasks. To deal with this, the
+     * can asynchronously submit new tasks. To deal with this,
      * each deactivating thread (in awaitWork) scans all queues to
      * check for tasks that could have been added during a race window
      * that would not be accompanied by a signal, in which case
